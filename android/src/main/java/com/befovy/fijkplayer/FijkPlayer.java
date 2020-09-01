@@ -47,11 +47,14 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.view.TextureRegistry;
 import tv.danmaku.ijk.media.player.IMediaPlayer;
-import tv.danmaku.ijk.media.player.IjkEventListener;
+//import tv.danmaku.ijk.media.player.IjkEventListener;
 import tv.danmaku.ijk.media.player.IjkMediaPlayer;
 import tv.danmaku.ijk.media.player.misc.IMediaDataSource;
 
-public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventListener, IMediaPlayer.OnSnapShotListener {
+//public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventListener, IMediaPlayer.OnSnapShotListener {
+public class FijkPlayer implements MethodChannel.MethodCallHandler,
+        IMediaPlayer.OnPreparedListener,
+        IMediaPlayer.OnErrorListener, IMediaPlayer.OnVideoSizeChangedListener {
 
     final private static AtomicInteger atomicId = new AtomicInteger(0);
 
@@ -101,14 +104,17 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
             mMethodChannel = null;
         } else {
             mIjkMediaPlayer = new IjkMediaPlayer();
-            mIjkMediaPlayer.addIjkEventListener(this);
+//            mIjkMediaPlayer.addIjkEventListener(this);
+            mIjkMediaPlayer.setOnPreparedListener(this);
+            mIjkMediaPlayer.setOnVideoSizeChangedListener(this);
+            mIjkMediaPlayer.setOnErrorListener(this);
             mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-position-notify", 1);
             mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 0);
 
             // IjkMediaPlayer.native_setLogLevel(IjkMediaPlayer.IJK_LOG_INFO);
             mMethodChannel = new MethodChannel(mEngine.messenger(), "befovy.com/fijkplayer/" + mPlayerId);
             mMethodChannel.setMethodCallHandler(this);
-            mIjkMediaPlayer.setOnSnapShotListener(this);
+//            mIjkMediaPlayer.setOnSnapShotListener(this);
 
             mEventChannel = new EventChannel(mEngine.messenger(), "befovy.com/fijkplayer/event/" + mPlayerId);
             mEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
@@ -133,7 +139,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         if (mJustSurface)
             return;
         if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
-            mIjkMediaPlayer.setAmcGlesRender();
+//            mIjkMediaPlayer.setAmcGlesRender();
             mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
         }
     }
@@ -161,7 +167,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
 
     void release() {
         if (!mJustSurface) {
-            handleEvent(PLAYBACK_STATE_CHANGED, end, mState, null);
+            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, end, mState, null);
             mIjkMediaPlayer.release();
         }
         if (mSurfaceTextureEntry != null) {
@@ -220,13 +226,13 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         Map<String, Object> event = new HashMap<>();
 
         switch (what) {
-            case PREPARED:
+            case FijkEventConstants.PREPARED:
                 event.put("event", "prepared");
                 long duration = mIjkMediaPlayer.getDuration();
                 event.put("duration", duration);
                 mEventSink.success(event);
                 break;
-            case PLAYBACK_STATE_CHANGED:
+            case FijkEventConstants.PLAYBACK_STATE_CHANGED:
                 mState = arg1;
                 event.put("event", "state_change");
                 event.put("new", arg1);
@@ -234,41 +240,41 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
                 onStateChanged(arg1, arg2);
                 mEventSink.success(event);
                 break;
-            case VIDEO_RENDERING_START:
-            case AUDIO_RENDERING_START:
+            case FijkEventConstants.VIDEO_RENDERING_START:
+            case FijkEventConstants.AUDIO_RENDERING_START:
                 event.put("event", "rendering_start");
-                event.put("type", what == VIDEO_RENDERING_START ? "video" : "audio");
+                event.put("type", what == FijkEventConstants.VIDEO_RENDERING_START ? "video" : "audio");
                 mEventSink.success(event);
                 break;
-            case BUFFERING_START:
-            case BUFFERING_END:
+            case FijkEventConstants.BUFFERING_START:
+            case FijkEventConstants.BUFFERING_END:
                 event.put("event", "freeze");
-                event.put("value", what == BUFFERING_START);
+                event.put("value", what == FijkEventConstants.BUFFERING_START);
                 mEventSink.success(event);
                 break;
 
             // buffer / cache position
-            case BUFFERING_UPDATE:
+            case FijkEventConstants.BUFFERING_UPDATE:
                 event.put("event", "buffering");
                 event.put("head", arg1);
                 event.put("percent", arg2);
                 mEventSink.success(event);
                 break;
-            case CURRENT_POSITION_UPDATE:
+            case FijkEventConstants.CURRENT_POSITION_UPDATE:
                 event.put("event", "pos");
                 event.put("pos", arg1);
                 mEventSink.success(event);
                 break;
-            case VIDEO_ROTATION_CHANGED:
+            case FijkEventConstants.VIDEO_ROTATION_CHANGED:
                 event.put("event", "rotate");
                 event.put("degree", arg1);
                 mRotate = arg1;
                 mEventSink.success(event);
                 if (mWidth > 0 && mHeight > 0) {
-                    handleEvent(VIDEO_SIZE_CHANGED, mWidth, mHeight, null);
+                    handleEvent(FijkEventConstants.VIDEO_SIZE_CHANGED, mWidth, mHeight, null);
                 }
                 break;
-            case VIDEO_SIZE_CHANGED:
+            case FijkEventConstants.VIDEO_SIZE_CHANGED:
                 event.put("event", "size_changed");
                 if (mRotate == 0 || mRotate == 180) {
                     event.put("width", arg1);
@@ -284,13 +290,13 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
                 mWidth = arg1;
                 mHeight = arg2;
                 break;
-            case SEEK_COMPLETE:
+            case FijkEventConstants.SEEK_COMPLETE:
                 event.put("event", "seek_complete");
                 event.put("pos", arg1);
                 event.put("err", arg2);
                 mEventSink.success(event);
                 break;
-            case ERROR:
+            case FijkEventConstants.ERROR:
                 mEventSink.error(String.valueOf(arg1), extra.toString(), arg2);
                 break;
             default:
@@ -299,7 +305,6 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         }
     }
 
-    @Override
     public void onSnapShot(IMediaPlayer iMediaPlayer, Bitmap bitmap, int w, int h) {
         ByteArrayOutputStream stream = new ByteArrayOutputStream();
         bitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream);
@@ -311,21 +316,20 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         mMethodChannel.invokeMethod("_onSnapshot", args);
     }
 
-    @Override
     public void onEvent(IjkMediaPlayer ijkMediaPlayer, int what, int arg1, int arg2, Object extra) {
         switch (what) {
-            case PREPARED:
-            case PLAYBACK_STATE_CHANGED:
-            case BUFFERING_START:
-            case BUFFERING_END:
-            case BUFFERING_UPDATE:
-            case VIDEO_SIZE_CHANGED:
-            case ERROR:
-            case VIDEO_RENDERING_START:
-            case AUDIO_RENDERING_START:
-            case CURRENT_POSITION_UPDATE:
-            case VIDEO_ROTATION_CHANGED:
-            case SEEK_COMPLETE:
+            case FijkEventConstants.PREPARED:
+            case FijkEventConstants.PLAYBACK_STATE_CHANGED:
+            case FijkEventConstants.BUFFERING_START:
+            case FijkEventConstants.BUFFERING_END:
+            case FijkEventConstants.BUFFERING_UPDATE:
+            case FijkEventConstants.VIDEO_SIZE_CHANGED:
+            case FijkEventConstants.ERROR:
+            case FijkEventConstants.VIDEO_RENDERING_START:
+            case FijkEventConstants.AUDIO_RENDERING_START:
+            case FijkEventConstants.CURRENT_POSITION_UPDATE:
+            case FijkEventConstants.VIDEO_ROTATION_CHANGED:
+            case FijkEventConstants.SEEK_COMPLETE:
                 handleEvent(what, arg1, arg2, extra);
                 break;
             default:
@@ -417,7 +421,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
                     AssetManager assetManager = context.getAssets();
                     InputStream is = assetManager.open(uri.getPath() != null ? uri.getPath() : "", AssetManager.ACCESS_RANDOM);
                     mIjkMediaPlayer.setDataSource(new RawMediaDataSource(is));
-                } else if (context != null){
+                } else if (context != null) {
                     if (TextUtils.isEmpty(uri.getScheme()) || "file".equals(uri.getScheme())) {
                         String path = uri.getPath() != null ? uri.getPath() : "";
                         IMediaDataSource dataSource = new FileMediaDataSource(new File(path));
@@ -428,9 +432,9 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
                 } else {
                     Log.e("FIJKPLAYER", "context null, can't setDataSource");
                 }
-                handleEvent(PLAYBACK_STATE_CHANGED, initialized, -1, null);
+                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, initialized, -1, null);
                 if (context == null) {
-                    handleEvent(PLAYBACK_STATE_CHANGED, error, -1, null);
+                    handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, error, -1, null);
                 }
                 result.success(null);
             } catch (FileNotFoundException e) {
@@ -441,7 +445,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         } else if (call.method.equals("prepareAsync")) {
             setup();
             mIjkMediaPlayer.prepareAsync();
-            handleEvent(PLAYBACK_STATE_CHANGED, asyncPreparing, -1, null);
+            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, asyncPreparing, -1, null);
             result.success(null);
         } else if (call.method.equals("start")) {
             mIjkMediaPlayer.start();
@@ -451,11 +455,11 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
             result.success(null);
         } else if (call.method.equals("stop")) {
             mIjkMediaPlayer.stop();
-            handleEvent(PLAYBACK_STATE_CHANGED, stopped, -1, null);
+            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, stopped, -1, null);
             result.success(null);
         } else if (call.method.equals("reset")) {
             mIjkMediaPlayer.reset();
-            handleEvent(PLAYBACK_STATE_CHANGED, idle, -1, null);
+            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, idle, -1, null);
             result.success(null);
         } else if (call.method.equals("getCurrentPosition")) {
             long pos = mIjkMediaPlayer.getCurrentPosition();
@@ -468,12 +472,12 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         } else if (call.method.equals("seekTo")) {
             final Integer msec = call.argument("msec");
             if (mState == completed)
-                handleEvent(PLAYBACK_STATE_CHANGED, paused, -1, null);
+                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, paused, -1, null);
             mIjkMediaPlayer.seekTo(msec != null ? msec.longValue() : 0);
             result.success(null);
         } else if (call.method.equals("setLoop")) {
             final Integer loopCount = call.argument("loop");
-            mIjkMediaPlayer.setLoopCount(loopCount != null ? loopCount : 1);
+//            mIjkMediaPlayer.setLoopCount(loopCount != null ? loopCount : 1);
             result.success(null);
         } else if (call.method.equals("setSpeed")) {
             final Double speed = call.argument("speed");
@@ -481,7 +485,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
             result.success(null);
         } else if (call.method.equals("snapshot")) {
             if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
-                mIjkMediaPlayer.snapShot();
+//                mIjkMediaPlayer.setSn();
             } else {
                 mMethodChannel.invokeMethod("_onSnapshot", "not support");
             }
@@ -489,5 +493,21 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         } else {
             result.notImplemented();
         }
+    }
+
+    @Override
+    public void onPrepared(IMediaPlayer iMediaPlayer) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.PREPARED, 0, 0, new HashMap<String, String>());
+    }
+
+    @Override
+    public boolean onError(IMediaPlayer iMediaPlayer, int i, int i1) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.ERROR, i, i1, new HashMap<String, String>());
+        return false;
+    }
+
+    @Override
+    public void onVideoSizeChanged(IMediaPlayer iMediaPlayer, int i, int i1, int i2, int i3) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.PREPARED, i, i1, new HashMap<String, String>());
     }
 }
