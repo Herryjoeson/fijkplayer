@@ -85,7 +85,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
     final private HostOption mHostOptions = new HostOption();
 
     private int mState;
-    private int mRotate = -1;
+    private int mRotate = 0;
     private int mWidth = 0;
     private int mHeight = 0;
     private TextureRegistry.SurfaceTextureEntry mSurfaceTextureEntry;
@@ -508,6 +508,6 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
 
     @Override
     public void onVideoSizeChanged(IMediaPlayer iMediaPlayer, int i, int i1, int i2, int i3) {
-        onEvent(mIjkMediaPlayer, FijkEventConstants.PREPARED, i, i1, new HashMap<String, String>());
+        onEvent(mIjkMediaPlayer, FijkEventConstants.VIDEO_SIZE_CHANGED, i, i1, new HashMap<String, String>());
     }
 }
