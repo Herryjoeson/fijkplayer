@@ -137,9 +137,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
     void setup() {
         if (mJustSurface)
             return;
-        if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
-            mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
-        }
+        mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
     }
 
     long setupSurface() {
