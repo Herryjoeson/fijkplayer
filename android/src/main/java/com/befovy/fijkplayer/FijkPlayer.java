@@ -33,7 +33,6 @@ import android.view.Surface;
 
 import androidx.annotation.NonNull;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -47,14 +46,16 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.view.TextureRegistry;
 import tv.danmaku.ijk.media.player.IMediaPlayer;
-//import tv.danmaku.ijk.media.player.IjkEventListener;
 import tv.danmaku.ijk.media.player.IjkMediaPlayer;
 import tv.danmaku.ijk.media.player.misc.IMediaDataSource;
 
-//public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventListener, IMediaPlayer.OnSnapShotListener {
 public class FijkPlayer implements MethodChannel.MethodCallHandler,
         IMediaPlayer.OnPreparedListener,
-        IMediaPlayer.OnErrorListener, IMediaPlayer.OnVideoSizeChangedListener {
+        IMediaPlayer.OnErrorListener,
+        IMediaPlayer.OnVideoSizeChangedListener,
+        IMediaPlayer.OnInfoListener,
+        IMediaPlayer.OnCompletionListener,
+        IMediaPlayer.OnBufferingUpdateListener {
 
     final private static AtomicInteger atomicId = new AtomicInteger(0);
 
@@ -85,7 +86,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
     final private HostOption mHostOptions = new HostOption();
 
     private int mState;
-    private int mRotate = -1;
+    private int mRotate = 0;
     private int mWidth = 0;
     private int mHeight = 0;
     private TextureRegistry.SurfaceTextureEntry mSurfaceTextureEntry;
@@ -104,17 +105,15 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
             mMethodChannel = null;
         } else {
             mIjkMediaPlayer = new IjkMediaPlayer();
-//            mIjkMediaPlayer.addIjkEventListener(this);
             mIjkMediaPlayer.setOnPreparedListener(this);
             mIjkMediaPlayer.setOnVideoSizeChangedListener(this);
             mIjkMediaPlayer.setOnErrorListener(this);
+            mIjkMediaPlayer.setOnInfoListener(this);
             mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-position-notify", 1);
             mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 0);
 
-            // IjkMediaPlayer.native_setLogLevel(IjkMediaPlayer.IJK_LOG_INFO);
             mMethodChannel = new MethodChannel(mEngine.messenger(), "befovy.com/fijkplayer/" + mPlayerId);
             mMethodChannel.setMethodCallHandler(this);
-//            mIjkMediaPlayer.setOnSnapShotListener(this);
 
             mEventChannel = new EventChannel(mEngine.messenger(), "befovy.com/fijkplayer/event/" + mPlayerId);
             mEventChannel.setStreamHandler(new EventChannel.StreamHandler() {
@@ -138,10 +137,7 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
     void setup() {
         if (mJustSurface)
             return;
-        if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
-//            mIjkMediaPlayer.setAmcGlesRender();
-            mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
-        }
+        mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
     }
 
     long setupSurface() {
@@ -305,17 +301,6 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
         }
     }
 
-    public void onSnapShot(IMediaPlayer iMediaPlayer, Bitmap bitmap, int w, int h) {
-        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream);
-        bitmap.recycle();
-        Map<String, Object> args = new HashMap<>();
-        args.put("data", stream.toByteArray());
-        args.put("w", w);
-        args.put("h", h);
-        mMethodChannel.invokeMethod("_onSnapshot", args);
-    }
-
     public void onEvent(IjkMediaPlayer ijkMediaPlayer, int what, int arg1, int arg2, Object extra) {
         switch (what) {
             case FijkEventConstants.PREPARED:
@@ -372,126 +357,135 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
 
     @Override
     public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
-        //noinspection IfCanBeSwitch
-        if (call.method.equals("setupSurface")) {
-            long viewId = setupSurface();
-            result.success(viewId);
-        } else if (call.method.equals("setOption")) {
-            Integer category = call.argument("cat");
-            final String key = call.argument("key");
-            if (call.hasArgument("long")) {
-                final Integer value = call.argument("long");
-                if (category != null && category != 0) {
-                    mIjkMediaPlayer.setOption(category, key, value != null ? value.longValue() : 0);
-                } else if (category != null) {
-                    // cat == 0, hostCategory
-                    mHostOptions.addIntOption(key, value);
-                }
-            } else if (call.hasArgument("str")) {
-                final String value = call.argument("str");
-                if (category != null && category != 0) {
-                    mIjkMediaPlayer.setOption(category, key, value);
-                } else if (category != null) {
-                    // cat == 0, hostCategory
-                    mHostOptions.addStrOption(key, value);
-                }
-            } else {
-                Log.w("FIJKPLAYER", "error arguments for setOptions");
-            }
-            result.success(null);
-        } else if (call.method.equals("applyOptions")) {
-            applyOptions(call.arguments);
-            result.success(null);
-        } else if (call.method.equals("setDataSource")) {
-            String url = call.argument("url");
-            Uri uri = Uri.parse(url);
-            boolean openAsset = false;
-            if ("asset".equals(uri.getScheme())) {
-                openAsset = true;
-                String host = uri.getHost();
-                String path = uri.getPath() != null ? uri.getPath().substring(1) : "";
-                String asset = mEngine.lookupKeyForAsset(path, host);
-                if (!TextUtils.isEmpty(asset)) {
-                    uri = Uri.parse(asset);
-                }
-            }
-            try {
-                Context context = mEngine.context();
-                if (openAsset && context != null) {
-                    AssetManager assetManager = context.getAssets();
-                    InputStream is = assetManager.open(uri.getPath() != null ? uri.getPath() : "", AssetManager.ACCESS_RANDOM);
-                    mIjkMediaPlayer.setDataSource(new RawMediaDataSource(is));
-                } else if (context != null) {
-                    if (TextUtils.isEmpty(uri.getScheme()) || "file".equals(uri.getScheme())) {
-                        String path = uri.getPath() != null ? uri.getPath() : "";
-                        IMediaDataSource dataSource = new FileMediaDataSource(new File(path));
-                        mIjkMediaPlayer.setDataSource(dataSource);
-                    } else {
-                        mIjkMediaPlayer.setDataSource(mEngine.context(), uri);
+        switch (call.method) {
+            case "setupSurface":
+                long viewId = setupSurface();
+                result.success(viewId);
+                break;
+            case "setOption":
+                Integer category = call.argument("cat");
+                final String key = call.argument("key");
+                if (call.hasArgument("long")) {
+                    final Integer value = call.argument("long");
+                    if (category != null && category != 0) {
+                        mIjkMediaPlayer.setOption(category, key, value != null ? value.longValue() : 0);
+                    } else if (category != null) {
+                        // cat == 0, hostCategory
+                        mHostOptions.addIntOption(key, value);
+                    }
+                } else if (call.hasArgument("str")) {
+                    final String value = call.argument("str");
+                    if (category != null && category != 0) {
+                        mIjkMediaPlayer.setOption(category, key, value);
+                    } else if (category != null) {
+                        // cat == 0, hostCategory
+                        mHostOptions.addStrOption(key, value);
                     }
                 } else {
-                    Log.e("FIJKPLAYER", "context null, can't setDataSource");
-                }
-                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, initialized, -1, null);
-                if (context == null) {
-                    handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, error, -1, null);
+                    Log.w("FIJKPLAYER", "error arguments for setOptions");
                 }
                 result.success(null);
-            } catch (FileNotFoundException e) {
-                result.error("-875574348", "Local File not found:" + e.getMessage(), null);
-            } catch (IOException e) {
-                result.error("-1162824012", "Local IOException:" + e.getMessage(), null);
-            }
-        } else if (call.method.equals("prepareAsync")) {
-            setup();
-            mIjkMediaPlayer.prepareAsync();
-            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, asyncPreparing, -1, null);
-            result.success(null);
-        } else if (call.method.equals("start")) {
-            mIjkMediaPlayer.start();
-            result.success(null);
-        } else if (call.method.equals("pause")) {
-            mIjkMediaPlayer.pause();
-            result.success(null);
-        } else if (call.method.equals("stop")) {
-            mIjkMediaPlayer.stop();
-            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, stopped, -1, null);
-            result.success(null);
-        } else if (call.method.equals("reset")) {
-            mIjkMediaPlayer.reset();
-            handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, idle, -1, null);
-            result.success(null);
-        } else if (call.method.equals("getCurrentPosition")) {
-            long pos = mIjkMediaPlayer.getCurrentPosition();
-            result.success(pos);
-        } else if (call.method.equals("setVolume")) {
-            final Double volume = call.argument("volume");
-            float vol = volume != null ? volume.floatValue() : 1.0f;
-            mIjkMediaPlayer.setVolume(vol, vol);
-            result.success(null);
-        } else if (call.method.equals("seekTo")) {
-            final Integer msec = call.argument("msec");
-            if (mState == completed)
-                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, paused, -1, null);
-            mIjkMediaPlayer.seekTo(msec != null ? msec.longValue() : 0);
-            result.success(null);
-        } else if (call.method.equals("setLoop")) {
-            final Integer loopCount = call.argument("loop");
+                break;
+            case "applyOptions":
+                applyOptions(call.arguments);
+                result.success(null);
+                break;
+            case "setDataSource":
+                String url = call.argument("url");
+                Uri uri = Uri.parse(url);
+                boolean openAsset = false;
+                if ("asset".equals(uri.getScheme())) {
+                    openAsset = true;
+                    String host = uri.getHost();
+                    String path = uri.getPath() != null ? uri.getPath().substring(1) : "";
+                    String asset = mEngine.lookupKeyForAsset(path, host);
+                    if (!TextUtils.isEmpty(asset)) {
+                        uri = Uri.parse(asset);
+                    }
+                }
+                try {
+                    Context context = mEngine.context();
+                    if (openAsset && context != null) {
+                        AssetManager assetManager = context.getAssets();
+                        InputStream is = assetManager.open(uri.getPath() != null ? uri.getPath() : "", AssetManager.ACCESS_RANDOM);
+                        mIjkMediaPlayer.setDataSource(new RawMediaDataSource(is));
+                    } else if (context != null) {
+                        if (TextUtils.isEmpty(uri.getScheme()) || "file".equals(uri.getScheme())) {
+                            String path = uri.getPath() != null ? uri.getPath() : "";
+                            IMediaDataSource dataSource = new FileMediaDataSource(new File(path));
+                            mIjkMediaPlayer.setDataSource(dataSource);
+                        } else {
+                            mIjkMediaPlayer.setDataSource(mEngine.context(), uri);
+                        }
+                    } else {
+                        Log.e("FIJKPLAYER", "context null, can't setDataSource");
+                    }
+                    handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, initialized, -1, null);
+                    if (context == null) {
+                        handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, error, -1, null);
+                    }
+                    result.success(null);
+                } catch (FileNotFoundException e) {
+                    result.error("-875574348", "Local File not found:" + e.getMessage(), null);
+                } catch (IOException e) {
+                    result.error("-1162824012", "Local IOException:" + e.getMessage(), null);
+                }
+                break;
+            case "prepareAsync":
+                setup();
+                mIjkMediaPlayer.prepareAsync();
+                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, asyncPreparing, -1, null);
+                result.success(null);
+                break;
+            case "start":
+                mIjkMediaPlayer.start();
+                result.success(null);
+                break;
+            case "pause":
+                mIjkMediaPlayer.pause();
+                result.success(null);
+                break;
+            case "stop":
+                mIjkMediaPlayer.stop();
+                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, stopped, -1, null);
+                result.success(null);
+                break;
+            case "reset":
+                mIjkMediaPlayer.reset();
+                handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, idle, -1, null);
+                result.success(null);
+                break;
+            case "getCurrentPosition":
+                long pos = mIjkMediaPlayer.getCurrentPosition();
+                result.success(pos);
+                break;
+            case "setVolume":
+                final Double volume = call.argument("volume");
+                float vol = volume != null ? volume.floatValue() : 1.0f;
+                mIjkMediaPlayer.setVolume(vol, vol);
+                result.success(null);
+                break;
+            case "seekTo":
+                final Integer msec = call.argument("msec");
+                if (mState == completed)
+                    handleEvent(FijkEventConstants.PLAYBACK_STATE_CHANGED, paused, -1, null);
+                mIjkMediaPlayer.seekTo(msec != null ? msec.longValue() : 0);
+                result.success(null);
+                break;
+            case "setLoop":
+                final Integer loopCount = call.argument("loop");
 //            mIjkMediaPlayer.setLoopCount(loopCount != null ? loopCount : 1);
-            result.success(null);
-        } else if (call.method.equals("setSpeed")) {
-            final Double speed = call.argument("speed");
-            mIjkMediaPlayer.setSpeed(speed != null ? speed.floatValue() : 1.0f);
-            result.success(null);
-        } else if (call.method.equals("snapshot")) {
-            if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
-//                mIjkMediaPlayer.setSn();
-            } else {
-                mMethodChannel.invokeMethod("_onSnapshot", "not support");
-            }
-            result.success(null);
-        } else {
-            result.notImplemented();
+                result.success(null);
+                break;
+            case "setSpeed":
+                final Double speed = call.argument("speed");
+                mIjkMediaPlayer.setSpeed(speed != null ? speed.floatValue() : 1.0f);
+                result.success(null);
+                break;
+            default:
+
+                result.notImplemented();
+                break;
         }
     }
 
@@ -508,6 +502,22 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
 
     @Override
     public void onVideoSizeChanged(IMediaPlayer iMediaPlayer, int i, int i1, int i2, int i3) {
-        onEvent(mIjkMediaPlayer, FijkEventConstants.PREPARED, i, i1, new HashMap<String, String>());
+        onEvent(mIjkMediaPlayer, FijkEventConstants.VIDEO_SIZE_CHANGED, i, i1, new HashMap<String, String>());
+    }
+
+    @Override
+    public void onBufferingUpdate(IMediaPlayer iMediaPlayer, int i) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.BUFFERING_UPDATE, i, 0, new HashMap<String, String>());
+    }
+
+    @Override
+    public void onCompletion(IMediaPlayer iMediaPlayer) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.COMPLETED, 0, 0, new HashMap<String, String>());
+    }
+
+    @Override
+    public boolean onInfo(IMediaPlayer iMediaPlayer, int i, int i1) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.FIND_STREAM_INFO, i, i1, new HashMap<String, String>());
+        return false;
     }
 }
