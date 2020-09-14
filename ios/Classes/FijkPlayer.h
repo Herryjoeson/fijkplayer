@@ -21,14 +21,13 @@
 // SOFTWARE.
 
 #import <Foundation/Foundation.h>
-#import <IJKMediaPlayer/IJKMediaPlayer.h>
+#import <IJKMediaFramework/IJKMediaPlayer.h>
 
 #import <Flutter/FlutterPlugin.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface FijkPlayer : NSObject <FlutterStreamHandler, IJKMPEventHandler,
-                                  FlutterTexture, IJKCVPBViewProtocol>
+@interface FijkPlayer : NSObject <FlutterStreamHandler, FlutterTexture>
 
 @property(atomic, readonly) NSNumber *playerId;
 

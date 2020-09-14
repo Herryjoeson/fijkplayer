@@ -24,12 +24,35 @@
 #import "FijkHostOption.h"
 #import "FijkPlugin.h"
 #import "FijkQueuingEventSink.h"
+#import "FijkEventConstants.h"
 
 #import <Flutter/Flutter.h>
 #import <Foundation/Foundation.h>
-#import <IJKMediaPlayer/IJKMediaPlayer.h>
+#import <IJKMediaFramework/IJKMediaPlayer.h>
 #import <libkern/OSAtomic.h>
 #import <stdatomic.h>
+
+@interface FLTIJKFrameUpdater : NSObject
+@property(nonatomic) int64_t textureId;
+@property(nonatomic, readonly) NSObject<FlutterTextureRegistry>* registry;
+- (void)onDisplayLink:(CADisplayLink*)link;
+@end
+
+
+@implementation FLTIJKFrameUpdater
+- (FLTIJKFrameUpdater*)initWithRegistry:(NSObject<FlutterTextureRegistry> *)registry
+{
+    NSAssert(self, @"super init cannot be nil");
+    if (self == nil) {
+        return nil;
+    };
+    _registry = registry;
+    return self;
+}
+- (void)onDisplayLink:(CADisplayLink*)link {
+    [_registry textureFrameAvailable: _textureId];
+}
+@end
 
 @interface FijkPlugin ()
 
@@ -42,7 +65,7 @@
 static atomic_int atomicId = 0;
 
 @implementation FijkPlayer {
-    IJKFFMediaPlayer *_ijkMediaPlayer;
+    IJKFFMoviePlayerController *_playerController;
 
     FijkQueuingEventSink *_eventSink;
     FlutterMethodChannel *_methodChannel;
@@ -50,9 +73,10 @@ static atomic_int atomicId = 0;
 
     id<FlutterPluginRegistrar> _registrar;
     id<FlutterTextureRegistry> _textureRegistry;
-
-    CVPixelBufferRef volatile _latestPixelBuffer;
-    CVPixelBufferRef _lastBuffer;
+    
+    FLTIJKFrameUpdater *_frameUpdater;
+    CVPixelBufferRef *_latestPixelBuffer;
+    CADisplayLink *_displayLink;
 
     int _width;
     int _height;
@@ -75,10 +99,6 @@ static const int stopped = 7;
 static const int __attribute__((unused)) error = 8;
 static const int end = 9;
 
-static int renderType = 0;
-
-// static int debugLeak = 0;
-
 - (instancetype)initJustTexture {
     self = [super init];
     if (self) {
@@ -98,57 +118,28 @@ static int renderType = 0;
         _playerId = @(pid);
         _pid = pid;
         _eventSink = [[FijkQueuingEventSink alloc] init];
-        _latestPixelBuffer = nil;
         _vid = -1;
-        _rotate = -1;
+        _rotate = 0;
         _state = 0;
-
         _hostOption = [[FijkHostOption alloc] init];
-        _lastBuffer = nil;
-        if (renderType == 0) {
-            _ijkMediaPlayer = [[IJKFFMediaPlayer alloc] init];
-            [_ijkMediaPlayer setOptionValue:@"fcc-bgra"
-                                     forKey:@"overlay-format"
-                                 ofCategory:kIJKFFOptionCategoryPlayer];
-        } else {
-            // _ijkMediaPlayer = [[IJKFFMediaPlayer alloc] initWithFbo];
-        }
-        // if (debugLeak) {
-        //    [_ijkMediaPlayer setLoop:0];
-        //    [_ijkMediaPlayer setSpeed:4.0];
-        //}
-
-        [_ijkMediaPlayer setOptionIntValue:0
-                                    forKey:@"start-on-prepared"
-                                ofCategory:kIJKFFOptionCategoryPlayer];
-        [_ijkMediaPlayer setOptionIntValue:1
-                                    forKey:@"enable-position-notify"
-                                ofCategory:kIJKFFOptionCategoryPlayer];
-        [_ijkMediaPlayer setOptionIntValue:1
-                                    forKey:@"videotoolbox"
-                                ofCategory:kIJKFFOptionCategoryPlayer];
 
         [IJKFFMoviePlayerController setLogLevel:k_IJK_LOG_INFO];
 
-        [_ijkMediaPlayer addIJKMPEventHandler:self];
-
         _methodChannel = [FlutterMethodChannel
-            methodChannelWithName:[@"befovy.com/fijkplayer/"
-                                      stringByAppendingString:[_playerId
-                                                                  stringValue]]
+            methodChannelWithName:[@"befovy.com/fijkplayer/" stringByAppendingString:[_playerId stringValue]]
                   binaryMessenger:[registrar messenger]];
 
         __block typeof(self) weakSelf = self;
-        [_methodChannel setMethodCallHandler:^(FlutterMethodCall *call,
-                                               FlutterResult result) {
+        [_methodChannel setMethodCallHandler: ^(FlutterMethodCall *call,FlutterResult result) {
           [weakSelf handleMethodCall:call result:result];
         }];
 
-        _eventChannel = [FlutterEventChannel
-            eventChannelWithName:[@"befovy.com/fijkplayer/event/"
-                                     stringByAppendingString:[_playerId
-                                                                 stringValue]]
-                 binaryMessenger:[registrar messenger]];
+        _eventChannel = [
+             FlutterEventChannel
+                 eventChannelWithName:[@"befovy.com/fijkplayer/event/"
+                 stringByAppendingString:[_playerId stringValue]]
+                 binaryMessenger:[registrar messenger]
+        ];
 
         [_eventChannel setStreamHandler:self];
     }
@@ -156,8 +147,90 @@ static int renderType = 0;
     return self;
 }
 
+- (void) initPlayer: (NSString *) url {
+    _playerController = [[IJKFFMoviePlayerController alloc] initWithContentURLString:url withOptions:nil];
+    [_playerController setOptionIntValue:1 forKey:@"enable-position-notify" ofCategory:kIJKFFOptionCategoryPlayer];
+    [_playerController setOptionIntValue:0 forKey:@"start-on-prepared" ofCategory:kIJKFFOptionCategoryPlayer];
+    [self installMovieNotificationObservers];
+}
+
+
+- (void)installMovieNotificationObservers {
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(moviePlayBackFinish:)
+                                                 name:IJKMPMoviePlayerPlaybackDidFinishNotification
+                                               object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(movieSizeChange:)
+                                                name:IJKMPMovieNaturalSizeAvailableNotification
+                                              object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(movieAudioFirstFrameStart:)
+                                                name:IJKMPMoviePlayerFirstAudioFrameRenderedNotification
+                                              object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(movieVideoFirstFrameStart:)
+                                                name:IJKMPMoviePlayerFirstVideoFrameRenderedNotification
+                                              object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(mediaIsPreparedToPlayDidChange:)
+                                                 name:IJKMPMediaPlaybackIsPreparedToPlayDidChangeNotification
+                                               object:_playerController];
+    
+}
+
+- (void)removeMovieNotificationObservers {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:IJKMPMoviePlayerPlaybackDidFinishNotification
+                                                  object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                name:IJKMPMovieNaturalSizeAvailableNotification
+                                              object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                name:IJKMPMoviePlayerFirstAudioFrameRenderedNotification
+                                              object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                name:IJKMPMoviePlayerFirstVideoFrameRenderedNotification
+                                              object:_playerController];
+    
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:IJKMPMediaPlaybackIsPreparedToPlayDidChangeNotification
+                                                  object:_playerController];
+    
+}
+
 - (void)setup {
-    _ijkMediaPlayer.cacheSnapshot = ([_hostOption getIntValue:FIJK_HOST_OPTION_ENABLE_SNAPSHOT defalt:@(0)] > 0);
+
+}
+
+- (void)movieSizeChange: (NSNotification*) notification {
+    int width = _playerController.naturalSize.width;
+    int height = _playerController.naturalSize.height;
+    [self handleEvent:IJKMPET_VIDEO_SIZE_CHANGED andArg1:width andArg2:height andExtra:nil];
+}
+
+- (void)movieAudioFirstFrameStart:(NSNotification*) notification {
+    [self handleEvent:IJKMPET_AUDIO_RENDERING_START andArg1:0 andArg2:0 andExtra:nil];
+}
+
+- (void)movieVideoFirstFrameStart:(NSNotification*) notification {
+    [self handleEvent:IJKMPET_VIDEO_RENDERING_START andArg1:0 andArg2:0 andExtra:nil];
+}
+
+- (void)moviePlayBackFinish: (NSNotification*) notification {
+    [self handleEvent:IJKMPET_COMPLETED andArg1:0 andArg2:0 andExtra:nil];
+}
+
+- (void)mediaIsPreparedToPlayDidChange: (NSNotification*) notification {
+    [self handleEvent:IJKMPET_PREPARED andArg1:0 andArg2:0 andExtra:nil];
 }
 
 - (void)shutdown {
@@ -165,34 +238,35 @@ static int renderType = 0;
               andArg1:end
               andArg2:_state
              andExtra:nil];
-    if (_ijkMediaPlayer) {
-        [_ijkMediaPlayer shutdown];
-        _ijkMediaPlayer = nil;
+    
+    [_displayLink invalidate];
+    _displayLink = nil;
+    _frameUpdater = nil;
+    
+    if (_playerController) {
+        [self removeMovieNotificationObservers];
+        [_playerController stop];
+        [_playerController shutdown];
+            _playerController = nil;
     }
+    
+    if (_latestPixelBuffer) {
+        CVPixelBufferRelease(_latestPixelBuffer);
+        _latestPixelBuffer = nil;
+    }
+    
     if (_vid >= 0) {
         [_textureRegistry unregisterTexture:_vid];
         _vid = -1;
         _textureRegistry = nil;
     }
 
-    CVPixelBufferRef old = _latestPixelBuffer;
-    while (!OSAtomicCompareAndSwapPtrBarrier(old, nil,
-                                             (void **)&_latestPixelBuffer)) {
-        old = _latestPixelBuffer;
-    }
-    if (old) {
-        CFRelease(old);
-    }
-
-    if (_lastBuffer) {
-        CVPixelBufferRelease(_lastBuffer);
-        _lastBuffer = nil;
-    }
     [_methodChannel setMethodCallHandler:nil];
     _methodChannel = nil;
 
     [_eventSink setDelegate:nil];
     _eventSink = nil;
+    
     [_eventChannel setStreamHandler:nil];
     _eventChannel = nil;
 }
@@ -202,63 +276,44 @@ static int renderType = 0;
     return nil;
 }
 
-- (FlutterError *_Nullable)onListenWithArguments:(id _Nullable)arguments
-                                       eventSink:
-                                           (nonnull FlutterEventSink)events {
+- (FlutterError *_Nullable)onListenWithArguments:(id _Nullable)arguments eventSink:(nonnull FlutterEventSink)events {
     [_eventSink setDelegate:events];
     return nil;
 }
 
-// IJKCVPBViewProtocol delegate
-// IJKFFMediaPlayer will incoke this method whem new frame should be displayed
-- (void)display_pixelbuffer:(CVPixelBufferRef)pixelbuffer {
-
-    if (_lastBuffer == nil) {
-        _lastBuffer = CVPixelBufferRetain(pixelbuffer);
-        CFRetain(pixelbuffer);
-    } else if (_lastBuffer != pixelbuffer) {
-        CVPixelBufferRelease(_lastBuffer);
-        _lastBuffer = CVPixelBufferRetain(pixelbuffer);
-        CFRetain(pixelbuffer);
-    }
-
-    CVPixelBufferRef newBuffer = pixelbuffer;
-
-    CVPixelBufferRef old = _latestPixelBuffer;
-    while (!OSAtomicCompareAndSwapPtrBarrier(old, newBuffer,
-                                             (void **)&_latestPixelBuffer)) {
-        old = _latestPixelBuffer;
-    }
-
-    if (old && old != pixelbuffer) {
-        CFRelease(old);
-    }
-    if (_vid >= 0) {
-        [_textureRegistry textureFrameAvailable:_vid];
-    }
-}
-
-// After textureFrameAvailable has been called
-// Flutter engine call this to get new CVPixelBufferRef to render
 - (CVPixelBufferRef _Nullable)copyPixelBuffer {
-    CVPixelBufferRef pixelBuffer = _latestPixelBuffer;
-    while (!OSAtomicCompareAndSwapPtrBarrier(pixelBuffer, nil,
-                                             (void **)&_latestPixelBuffer)) {
-        pixelBuffer = _latestPixelBuffer;
+    NSLog(@"copyPixelBuffer");
+    CVPixelBufferRef newBuffer = [_playerController framePixelBuffer];
+    if(newBuffer){
+        CFRetain(newBuffer);
+        CVPixelBufferRef pixelBuffer = _latestPixelBuffer;
+        while (!OSAtomicCompareAndSwapPtrBarrier(pixelBuffer, newBuffer, (void *) &_latestPixelBuffer)) {
+            pixelBuffer = _latestPixelBuffer;
+        }
+        return pixelBuffer;
     }
-    return pixelBuffer;
+    return nil;
 }
 
 - (NSNumber *)setupSurface {
-    [self setup];
+//    [self setup];
     if (_vid < 0) {
         _textureRegistry = [_registrar textures];
         int64_t vid = [_textureRegistry registerTexture:self];
+        
+        _frameUpdater = [[FLTIJKFrameUpdater alloc] initWithRegistry: _textureRegistry];
+        _frameUpdater.textureId = vid;
+        
+        _displayLink = [CADisplayLink displayLinkWithTarget:_frameUpdater selector:@selector(onDisplayLink:)];
+        _displayLink.frameInterval = 1;
+        [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+        _displayLink.paused = YES;
+        
         _vid = vid;
-        [_ijkMediaPlayer setupCVPixelBufferView:self];
     }
     return [NSNumber numberWithLongLong:_vid];
 }
+
 
 - (BOOL)isPlayable:(int)state {
     return state == started || state == paused || state == completed ||
@@ -267,8 +322,10 @@ static int renderType = 0;
 
 - (void)onStateChangedWithNew:(int)newState andOld:(int)oldState {
     FijkPlugin *plugin = [FijkPlugin singleInstance];
+    
     if (plugin == nil)
         return;
+    
     if (newState == started && oldState != started) {
         [plugin onPlayingChange:1];
         if ([[_hostOption getIntValue:FIJK_HOST_OPTION_REQUEST_SCREENON
@@ -298,7 +355,7 @@ static int renderType = 0;
     case IJKMPET_PREPARED:
         [_eventSink success:@{
             @"event" : @"prepared",
-            @"duration" : @([_ijkMediaPlayer getDuration]),
+            @"duration" : @((NSInteger)[_playerController duration]),
         }];
         break;
     case IJKMPET_PLAYBACK_STATE_CHANGED:
@@ -383,31 +440,6 @@ static int renderType = 0;
     }
 }
 
-- (void)onEvent4Player:(IJKFFMediaPlayer *)player
-              withType:(int)what
-               andArg1:(int)arg1
-               andArg2:(int)arg2
-              andExtra:(void *)extra {
-    switch (what) {
-    case IJKMPET_PREPARED:
-    case IJKMPET_PLAYBACK_STATE_CHANGED:
-    case IJKMPET_BUFFERING_START:
-    case IJKMPET_BUFFERING_END:
-    case IJKMPET_BUFFERING_UPDATE:
-    case IJKMPET_VIDEO_SIZE_CHANGED:
-    case IJKMPET_VIDEO_RENDERING_START:
-    case IJKMPET_AUDIO_RENDERING_START:
-    case IJKMPET_ERROR:
-    case IJKMPET_CURRENT_POSITION_UPDATE:
-    case 600:
-    case IJKMPET_VIDEO_ROTATION_CHANGED:
-        [self handleEvent:what andArg1:arg1 andArg2:arg2 andExtra:extra];
-        break;
-    default:
-        break;
-    }
-}
-
 - (void)setOptions:(NSDictionary *)options {
     for (id cat in options) {
         NSDictionary *option = [options objectForKey:cat];
@@ -417,7 +449,7 @@ static int renderType = 0;
                 if ([cat intValue] == 0) {
                     [_hostOption setIntValue:optValue forKey:key];
                 } else {
-                    [_ijkMediaPlayer
+                    [_playerController
                         setOptionIntValue:[optValue longLongValue]
                                    forKey:key
                                ofCategory:(IJKFFOptionCategory)[cat intValue]];
@@ -426,7 +458,7 @@ static int renderType = 0;
                 if ([cat intValue] == 0) {
                     [_hostOption setStrValue:optValue forKey:key];
                 } else {
-                    [_ijkMediaPlayer
+                    [_playerController
                         setOptionValue:optValue
                                 forKey:key
                             ofCategory:(IJKFFOptionCategory)[cat intValue]];
@@ -436,22 +468,12 @@ static int renderType = 0;
     }
 }
 
-- (void) takeSnapshot{
-    
-    [_ijkMediaPlayer takeSnapshot:^(UIImage * _Nullable image, NSError * _Nullable error) {
-        if (image != nil) {
-            NSDictionary *args = @{@"data":UIImageJPEGRepresentation(image, 1.0), @"w": @(image.size.width), @"h": @(image.size.height)};
-            [self->_methodChannel invokeMethod:@"_onSnapshot" arguments:args];
-        } else {
-            [self->_methodChannel invokeMethod:@"_onSnapshot" arguments:@"snapshot error"];
-        }
-    }];
-}
 
 - (void)handleMethodCall:(FlutterMethodCall *)call
                   result:(FlutterResult)result {
 
     NSDictionary *argsMap = call.arguments;
+    
     if ([@"setupSurface" isEqualToString:call.method]) {
         result([self setupSurface]);
     } else if ([@"setOption" isEqualToString:call.method]) {
@@ -462,7 +484,7 @@ static int renderType = 0;
             if (category == 0) {
                 [_hostOption setIntValue:argsMap[@"long"] forKey:key];
             } else {
-                [_ijkMediaPlayer
+                [_playerController
                     setOptionIntValue:value
                                forKey:key
                            ofCategory:(IJKFFOptionCategory)category];
@@ -472,7 +494,7 @@ static int renderType = 0;
             if (category == 0) {
                 [_hostOption setStrValue:value forKey:key];
             } else {
-                [_ijkMediaPlayer setOptionValue:value
+                [_playerController setOptionValue:value
                                          forKey:key
                                      ofCategory:(IJKFFOptionCategory)category];
             }
@@ -517,48 +539,48 @@ static int renderType = 0;
                                                    stringByAppendingString:url]
                                        details:nil]);
         } else {
-            [_ijkMediaPlayer setDataSource:url];
-            [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED
-                      andArg1:initialized
-                      andArg2:-1
-                     andExtra:nil];
+            [self initPlayer:url];
+            [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED andArg1:initialized andArg2:-1 andExtra:nil];
             result(nil);
         }
     } else if ([@"prepareAsync" isEqualToString:call.method]) {
         [self setup];
-        [_ijkMediaPlayer prepareAsync];
+        [_playerController prepareToPlay];
+        _displayLink.paused = NO;
         [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED
                   andArg1:asyncPreparing
                   andArg2:-1
                  andExtra:nil];
         result(nil);
     } else if ([@"start" isEqualToString:call.method]) {
-        int ret = [_ijkMediaPlayer start];
-        NSLog(@"start start %d", ret);
+        [_playerController play];
+        _displayLink.paused = NO;
         result(nil);
     } else if ([@"pause" isEqualToString:call.method]) {
-        [_ijkMediaPlayer pause];
+        [_playerController pause];
+        _displayLink.paused = YES;
         result(nil);
     } else if ([@"stop" isEqualToString:call.method]) {
-        [_ijkMediaPlayer stop];
+        [_playerController stop];
+        _displayLink.paused = YES;
         [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED
                   andArg1:stopped
                   andArg2:-1
                  andExtra:nil];
         result(nil);
     } else if ([@"reset" isEqualToString:call.method]) {
-        [_ijkMediaPlayer reset];
-        [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED
-                  andArg1:idle
-                  andArg2:-1
-                 andExtra:nil];
+//        [_playerController reset];
+//        [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED
+//                  andArg1:idle
+//                  andArg2:-1
+//                 andExtra:nil];
         result(nil);
     } else if ([@"getCurrentPosition" isEqualToString:call.method]) {
-        long pos = [_ijkMediaPlayer getCurrentPosition];
-        result(@(pos));
+//        long pos = [_playerController position];
+//        result(@(pos));
     } else if ([@"setVolume" isEqualToString:call.method]) {
         double volume = [argsMap[@"volume"] doubleValue];
-        [_ijkMediaPlayer setPlaybackVolume:(float)volume];
+        [_playerController setPlaybackVolume:(float)volume];
         result(nil);
     } else if ([@"seekTo" isEqualToString:call.method]) {
         long pos = [argsMap[@"msec"] longValue];
@@ -567,18 +589,12 @@ static int renderType = 0;
                       andArg1:paused
                       andArg2:-1
                      andExtra:nil];
-        [_ijkMediaPlayer seekTo:pos];
+        [_playerController setCurrentPlaybackTime:pos];
         result(nil);
-    } else if ([@"setLoop" isEqualToString:call.method]) {
-        int loopCount = [argsMap[@"loop"] intValue];
-        [_ijkMediaPlayer setLoop:loopCount];
     } else if ([@"setSpeed" isEqualToString:call.method]) {
         float speed = [argsMap[@"speed"] doubleValue];
-        [_ijkMediaPlayer setSpeed:speed];
-        result(nil);
-    } else if ([@"snapshot" isEqualToString:call.method]) {
-        [self takeSnapshot];
-        result(nil);
+//        [_playerController sp:speed];
+//        result(nil);
     } else {
         result(FlutterMethodNotImplemented);
     }
