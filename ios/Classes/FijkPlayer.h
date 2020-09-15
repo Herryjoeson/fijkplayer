@@ -27,7 +27,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface FijkPlayer : NSObject <FlutterStreamHandler, FlutterTexture>
+@interface FijkPlayer : NSObject <FlutterStreamHandler, IJKMPEventHandler,
+                                  FlutterTexture, IJKCVPBViewProtocol>
 
 @property(atomic, readonly) NSNumber *playerId;
 
