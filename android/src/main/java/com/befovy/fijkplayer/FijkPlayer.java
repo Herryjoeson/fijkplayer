@@ -517,7 +517,33 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler,
 
     @Override
     public boolean onInfo(IMediaPlayer iMediaPlayer, int i, int i1) {
-        onEvent(mIjkMediaPlayer, FijkEventConstants.FIND_STREAM_INFO, i, i1, new HashMap<String, String>());
+        switch (i) {
+            case IMediaPlayer.MEDIA_INFO_BUFFERING_START:
+                onEvent(mIjkMediaPlayer, FijkEventConstants.BUFFERING_START, 0, 0, new HashMap<String, String>());
+                break;
+
+            case IMediaPlayer.MEDIA_INFO_BUFFERING_END:
+                onEvent(mIjkMediaPlayer, FijkEventConstants.BUFFERING_END, 0, 0, new HashMap<String, String>());
+                break;
+
+            case IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START:
+                onEvent(mIjkMediaPlayer, FijkEventConstants.AUDIO_RENDERING_START, 0, 0, new HashMap<String, String>());
+                break;
+
+            case IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START:
+                onEvent(mIjkMediaPlayer, FijkEventConstants.VIDEO_RENDERING_START, 0, 0, new HashMap<String, String>());
+                break;
+
+            default:
+                onEvent(mIjkMediaPlayer, FijkEventConstants.FIND_STREAM_INFO, i, i1, new HashMap<String, String>());
+                break;
+        }
+
         return false;
+    }
+
+    @Override
+    public void onSeekComplete(IMediaPlayer iMediaPlayer) {
+        onEvent(mIjkMediaPlayer, FijkEventConstants.SEEK_COMPLETE, (int)iMediaPlayer.getCurrentPosition(), 0, new HashMap<String, String>());
     }
 }
